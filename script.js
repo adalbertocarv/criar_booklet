@@ -1,5 +1,5 @@
 document.addEventListener('DOMContentLoaded', () => {
-    // Elementos do DOM
+    const { PDFDocument, StandardFonts } = PDFLib;
     const fileInput = document.getElementById('fileInput');
     const dropZone = document.getElementById('dropZone');
     const mergeButton = document.getElementById('mergeButton');
@@ -52,124 +52,169 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Função para mesclar PDFs
+ // Função para criar uma página em branco com texto
+async function createBlankPageWithText(pageNumber) {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([595.28, 841.89]); // A4 size in points
+    const helveticaFont = await doc.embedFont(StandardFonts.Helvetica);
+
+    page.setFont(helveticaFont);
+    page.setFontSize(12);
+    page.drawText(`Página em Branco - Página ${pageNumber}`, {
+        x: 200,
+        y: 400,
+    });
+
+    return await doc.save();
+}
+
+// Função para ajustar o número de páginas para ser múltiplo de 8
+async function adjustToMultipleOf8(pdfDoc) {
+    const adjustedDoc = await PDFDocument.create();
+    const pages = await adjustedDoc.copyPages(pdfDoc, pdfDoc.getPageIndices());
+    pages.forEach(page => adjustedDoc.addPage(page));
+
+    // Adiciona páginas em branco até ser múltiplo de 8
+    while (adjustedDoc.getPageCount() % 8 !== 0) {
+        const blankPageBytes = await createBlankPageWithText(adjustedDoc.getPageCount() + 1);
+        const blankDoc = await PDFDocument.load(blankPageBytes);
+        const [blankPage] = await adjustedDoc.copyPages(blankDoc, [0]);
+        adjustedDoc.addPage(blankPage);
+    }
+
+    return adjustedDoc;
+}
+
+// Função para dividir o PDF em duas metades
+async function splitPDF(pdfDoc) {
+    const adjustedDoc = await adjustToMultipleOf8(pdfDoc);
+    const totalPages = adjustedDoc.getPageCount();
+    const half = Math.floor(totalPages / 2);
+
+    const doc1 = await PDFDocument.create();
+    const doc2 = await PDFDocument.create();
+
+    let left = 0;
+    let right = totalPages - 1;
+    let pageCounter = 0;
+
+    // Cria o primeiro PDF seguindo a lógica personalizada
+    while (pageCounter < half) {
+        const [pageRight] = await doc1.copyPages(adjustedDoc, [right--]);
+        doc1.addPage(pageRight);
+        pageCounter++;
+
+        if (pageCounter < half) {
+            const [pageLeft] = await doc1.copyPages(adjustedDoc, [left++]);
+            doc1.addPage(pageLeft);
+            pageCounter++;
+        }
+
+        if (pageCounter < half) {
+            const [pageLeft] = await doc1.copyPages(adjustedDoc, [left++]);
+            doc1.addPage(pageLeft);
+            pageCounter++;
+        }
+
+        if (pageCounter < half) {
+            const [pageRight] = await doc1.copyPages(adjustedDoc, [right--]);
+            doc1.addPage(pageRight);
+            pageCounter++;
+        }
+    }
+
+    // Cria o segundo PDF com as páginas restantes
+    while (left <= right) {
+        if (left <= right) {
+            const [page] = await doc2.copyPages(adjustedDoc, [right]);
+            doc2.addPage(page);
+            right--;
+        }
+        if (left <= right) {
+            const [page] = await doc2.copyPages(adjustedDoc, [left]);
+            doc2.addPage(page);
+            left++;
+        }
+        if (left <= right) {
+            const [page] = await doc2.copyPages(adjustedDoc, [left]);
+            doc2.addPage(page);
+            left++;
+        }
+        if (left <= right) {
+            const [page] = await doc2.copyPages(adjustedDoc, [right]);
+            doc2.addPage(page);
+            right--;
+        }
+    }
+
+    return { doc1, doc2 };
+}
+
+    // Combinar metades em um único PDF
+    async function combinePDFHalves(doc1, doc2) {
+        const combinedDoc = await PDFDocument.create();
+        const larguraA4 = 595.28;
+        const alturaA4 = 841.89;
+        const positions = [
+            { x: 0, y: alturaA4 / 2 },
+            { x: larguraA4 / 2, y: alturaA4 / 2 },
+            { x: 0, y: 0 },
+            { x: larguraA4 / 2, y: 0 }
+        ];
+
+        const totalPages = Math.max(doc1.getPageCount(), doc2.getPageCount());
+        for (let i = 0; i < totalPages; i += 2) {
+            const novaPagina = combinedDoc.addPage([larguraA4, alturaA4]);
+
+            const paginasMetade1 = await combinedDoc.copyPages(doc1, [i, i + 1].filter(idx => idx < doc1.getPageCount()));
+            const paginasMetade2 = await combinedDoc.copyPages(doc2, [i, i + 1].filter(idx => idx < doc2.getPageCount()));
+            const paginas = [...paginasMetade1, ...paginasMetade2];
+
+            for (let j = 0; j < paginas.length; j++) {
+                const pos = positions[j];
+                const embeddedPage = await combinedDoc.embedPage(paginas[j]);
+                novaPagina.drawPage(embeddedPage, {
+                    x: pos.x,
+                    y: pos.y,
+                    width: larguraA4 / 2,
+                    height: alturaA4 / 2,
+                });
+            }
+        }
+
+        return combinedDoc;
+    }
+
+    // Evento do botão "Criar PDF"
     async function handleMerge() {
         if (!selectedFile) {
             alert('Por favor, selecione um arquivo PDF.');
             return;
         }
 
-        const reader = new FileReader();
-        reader.onload = async (event) => {
-            try {
-                const existingPdfBytes = new Uint8Array(event.target.result);
-                const pdfDoc = await PDFLib.PDFDocument.load(existingPdfBytes);
-                const outputPdfDoc = await PDFLib.PDFDocument.create();
-                let totalPages = pdfDoc.getPageCount();
+        try {
+            const pdfBytes = await selectedFile.arrayBuffer();
+            const pdfDoc = await PDFDocument.load(pdfBytes);
 
-                const sequence = generateSequence(totalPages);
-                await embedPages(pdfDoc, outputPdfDoc, sequence);
+            const { doc1, doc2 } = await splitPDF(pdfDoc);
+            const combinedDoc = await combinePDFHalves(doc1, doc2);
 
-                // Chamar a função para excluir metade das páginas
-                removeSecondHalf(outputPdfDoc);
-
-                const pdfBytes = await outputPdfDoc.save();
-                prepareDownload(pdfBytes);
-            } catch (error) {
-                alert('Ocorreu um erro ao processar o PDF: ' + error.message);
-            }
-        };
-
-        reader.readAsArrayBuffer(selectedFile);
-    }
-
-    // Função para embutir páginas no novo documento PDF
-    async function embedPages(pdfDoc, outputPdfDoc, sequence) {
-        const totalPages = pdfDoc.getPageCount();
-        const embeddedPages = await Promise.all(sequence.map(async (pageIndex) => {
-            if (pageIndex <= totalPages) {
-                const [page] = await pdfDoc.copyPages(pdfDoc, [pageIndex - 1]);
-                return await outputPdfDoc.embedPage(page);
-            }
-            return null;
-        }));
-
-        for (let i = 0; i < embeddedPages.length; i += 4) {
-            const newPage = outputPdfDoc.addPage([595.28, 841.89]); // A4 tamanho em pontos [width, height]
-            const positions = [
-                { x: 0, y: 420.945 },
-                { x: 297.64, y: 420.945 },
-                { x: 0, y: 0 },
-                { x: 297.64, y: 0 }
-            ];
-
-            for (let j = 0; j < 4 && i + j < embeddedPages.length; j++) {
-                const pos = positions[j];
-                const embeddedPage = embeddedPages[i + j];
-                if (embeddedPage) {
-                    newPage.drawPage(embeddedPage, { x: pos.x, y: pos.y, width: 297.64, height: 420.945 });
-                    console.log(`Folha ${Math.floor(i / 4) + 1}, Posição ${j + 1}: Página ${sequence[i + j]}`);
-                }
-            }
+            const finalBytes = await combinedDoc.save();
+            prepareDownload(finalBytes);
+        } catch (error) {
+            console.error('Erro ao processar o PDF:', error);
+            alert('Ocorreu um erro ao criar o mini livro PDF.');
         }
     }
 
-    // Função para preparar o download do arquivo PDF
+    // Preparar download
     function prepareDownload(pdfBytes) {
         const blob = new Blob([pdfBytes], { type: 'application/pdf' });
         const url = URL.createObjectURL(blob);
+
         downloadLink.href = url;
-        downloadLink.download = selectedFile.name.replace('.pdf', '') + '_mini_livro.pdf';
+        downloadLink.download = 'mini_livro.pdf';
         downloadLink.style.display = 'block';
-        downloadLink.textContent = 'Baixar booklet PDF';
-    }
-
-    // Função para gerar a sequência de páginas
-    function generateSequence(totalPages) {
-        let sequence = [];
-        let evenPages = [];
-        let oddPages = [];
-
-        // Adiciona as páginas pares e ímpares em suas respectivas listas
-        for (let i = 1; i <= totalPages; i++) {
-            if (i % 2 === 0) {
-                evenPages.push(i);
-            } else {
-                oddPages.push(i);
-            }
-        }
-
-        // Organizar as páginas em um livreto no padrão [2, 7, 4, 5], [8, 1, 6, 3]
-        let numFolhas = totalPages / 4;
-
-        for (let i = 0; i < numFolhas; i++) {
-            // Frente da folha
-            let frenteEsquerdaPar = evenPages.shift();  // Próxima página par
-            let frenteDireitaImpar = oddPages.pop();    // Maior página ímpar restante
-            let frenteDireitaPar = evenPages.shift();   // Próxima página par
-            let frenteEsquerdaImpar = oddPages.pop();   // Maior página ímpar restante
-
-            // Verso da folha
-            let versoEsquerdaPar = evenPages.pop();     // Última página par
-            let versoDireitaImpar = oddPages.shift();   // Próxima menor página ímpar
-            let versoDireitaPar = evenPages.pop();      // Última página par
-            let versoEsquerdaImpar = oddPages.shift();  // Próxima menor página ímpar
-
-            // Adiciona a folha organizada
-            sequence.push(frenteEsquerdaPar, frenteDireitaImpar, frenteDireitaPar, frenteEsquerdaImpar);
-            sequence.push(versoEsquerdaPar, versoDireitaImpar, versoDireitaPar, versoEsquerdaImpar);
-        }
-        return sequence;
-    }
-
-    // Função para remover a segunda metade do PDF
-    function removeSecondHalf(outputPdfDoc) {
-        const totalPages = outputPdfDoc.getPageCount();
-        const half = Math.floor(totalPages / 2);
-
-        // Remove as páginas da metade para o final
-        for (let i = totalPages - 1; i >= half; i--) {
-            outputPdfDoc.removePage(i);
-        }
+        downloadLink.textContent = 'Baixar Mini Livro PDF';
     }
 });

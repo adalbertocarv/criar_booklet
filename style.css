@@ -14,6 +14,9 @@ body {
     padding: 20px;
     border-radius: 8px;
     box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    width: 90%;
+    max-width: 500px;
+    box-sizing: border-box;
 }
 
 #dropZone {
@@ -21,6 +24,12 @@ body {
     padding: 20px;
     margin: 20px 0;
     cursor: pointer;
+    transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+
+#dropZone.dragover {
+    border-color: #28a745;
+    background-color: #e8f5e9;
 }
 
 #fileInput {
@@ -34,6 +43,7 @@ button {
     border: none;
     border-radius: 4px;
     cursor: pointer;
+    transition: background-color 0.3s ease;
 }
 
 button:hover {
